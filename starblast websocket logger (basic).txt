@@ -1,0 +1,45 @@
+// ==UserScript==
+// @name         starblast.io WS logger
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  logs WS activity on starblast.io
+// @author       plxyer-x
+// @match        https://starblast.io/
+// @grant        none.
+// @license      nope, none.
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    console.log("%c[WS Logga] Any WS activity will be logged here.", "color: #9c27b0; font-weight: bold;");
+
+    // Intercept the WebSocket constructor to log connections
+    const originalWebSocket = window.WebSocket;
+
+    window.WebSocket = function(...args) {
+        const ws = new originalWebSocket(...args);
+
+        // Log when a new WebSocket is created
+        console.log(`%c[WS Logs] New WS created for URL: ${args[0]}`, "color: #9c27b0");
+
+        // Add event listeners to log activity
+        ws.addEventListener('open', (event) => {
+            console.log("%c[WS Logs] Connection Opened", "color: #4caf50;");
+        });
+
+        ws.addEventListener('message', (event) => {
+            console.log(`%c[WS Logs] Message Received:`, "color: #ff9800;", event.data);
+        });
+
+        ws.addEventListener('close', (event) => {
+            console.log(`%c[WS Logs] Connection Closed with code: ${event.code}`, "color: #f44336;");
+        });
+
+        ws.addEventListener('error', (event) => {
+            console.error("%c[WS Logs] Connection Error", "color: #f44336;", event);
+        });
+
+        return ws;
+    };
+})();

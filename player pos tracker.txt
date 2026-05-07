@@ -1,0 +1,169 @@
+// ==UserScript==
+// @name          starblast.io player position tracker
+// @namespace     http://tampermonkey.net/
+// @version       1.0
+// @description   can accurately find player postions in the console using reverse-engineering.
+// @author        plxyer-x
+// @match         *://starblast.io/*
+// @grant         none
+// @license       hahahahahaha
+// @run-at        document-start
+// ==/UserScript==
+
+(function() {
+  'use strict';
+
+  console.log("%c[Decoder Client] Initialized (v4.0: Protocol Confirmed).", "color: #E91E63; font-weight: bold;");
+
+  // --- FINAL CONFIRMED PROTOCOL CONFIG ---
+  const POSITION_TYPES = [200, 205];
+  const ID_BYTE_SIZE = 2;
+  const STATUS_BLOCK_SIZE = 6;
+  const COORD_BYTE_SIZE = 2;
+  const ROT_BYTE_SIZE = 2;
+  const VELOCITY_BYTE_SIZE = 2;
+  const TOTAL_RECORD_SIZE = 19;
+  const SCALE_FACTOR = 100;
+  const ROT_SCALE_FACTOR = 10000;
+  const IS_LITTLE_ENDIAN = true;
+
+  // calculate the final 1-byte skip
+  const MIN_KNOWN_FIELDS_SIZE = ID_BYTE_SIZE + STATUS_BLOCK_SIZE + (COORD_BYTE_SIZE * 2) + ROT_BYTE_SIZE + (VELOCITY_BYTE_SIZE * 2);
+  const TAIL_SKIP = TOTAL_RECORD_SIZE - MIN_KNOWN_FIELDS_SIZE; // 19 - 18 = 1 byte
+
+
+  // --- state ---
+  const players = new Map(); // id -> { name, x, y, rot, vx, vy, status[] }
+
+  // --- utils ---
+  function blobToArrayBuffer(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  // --- decoder ---
+  function decodeBinaryData(buffer) {
+    const view = new DataView(buffer);
+    let offset = 0;
+    if (buffer.byteLength === 0) return;
+
+    const messageType = view.getUint8(offset);
+    offset += 1;
+
+    if (!POSITION_TYPES.includes(messageType)) {
+      if (messageType !== 0 && buffer.byteLength > 1) {
+        console.log(`[DECODER] Binary Message (Type: ${messageType}, Size: ${buffer.byteLength} bytes) - Unhandled Type`);
+      }
+      return;
+    }
+
+    const expectedPayloadSize = buffer.byteLength - 1;
+    const numRecords = Math.floor(expectedPayloadSize / TOTAL_RECORD_SIZE);
+
+    // Check for packet trailer, which is normal
+    if (expectedPayloadSize % TOTAL_RECORD_SIZE !== 0) {
+         const trailer = expectedPayloadSize % TOTAL_RECORD_SIZE;
+         console.log(`%c[DECODER INFO] Type ${messageType}: Decoded ${numRecords} position records. ${trailer} bytes of unknown trailer data remaining.`, "color: #2196F3;");
+    }
+
+    // Process all valid 19-byte records
+    for (let i = 0; i < numRecords; i++) {
+      if (offset + TOTAL_RECORD_SIZE > buffer.byteLength) break;
+
+      // Ship ID (2 bytes)
+      const id = view.getUint16(offset, IS_LITTLE_ENDIAN);
+      offset += ID_BYTE_SIZE;
+
+      // Status Block (6 bytes)
+      const status = [];
+      for (let j = 0; j < STATUS_BLOCK_SIZE; j++)
+          //ignore the erro here lol
+      status.push(view.getUint8(offset + j));
+      offset += STATUS_BLOCK_SIZE;
+
+      // Position X (2 bytes, Offset 8)
+      const x = view.getInt16(offset, IS_LITTLE_ENDIAN) / SCALE_FACTOR;
+      offset += COORD_BYTE_SIZE;
+
+      // Position Y (2 bytes, Offset 10)
+      const y = view.getInt16(offset, IS_LITTLE_ENDIAN) / SCALE_FACTOR;
+      offset += COORD_BYTE_SIZE;
+
+      // Rotation (2 bytes, Offset 12)
+      const rot = view.getInt16(offset, IS_LITTLE_ENDIAN) / ROT_SCALE_FACTOR;
+      offset += ROT_BYTE_SIZE;
+
+      // Velocity X (2 bytes, Offset 14)
+      const vx = view.getInt16(offset, IS_LITTLE_ENDIAN) / SCALE_FACTOR;
+      offset += VELOCITY_BYTE_SIZE;
+
+      // Velocity Y (2 bytes, Offset 16)
+      const vy = view.getInt16(offset, IS_LITTLE_ENDIAN) / SCALE_FACTOR;
+      offset += VELOCITY_BYTE_SIZE;
+
+      // Skip the remaining 1 byte (Offset 18)
+      offset += TAIL_SKIP;
+
+      // Update player state
+      const prev = players.get(id) || {};
+      players.set(id, {
+        id,
+        name: prev.name || `(ID ${id})`,
+        x: +x.toFixed(2),
+        y: +y.toFixed(2),
+        rot: +rot.toFixed(4),
+        vx: +vx.toFixed(2),
+        vy: +vy.toFixed(2),
+        status: status
+      });
+    }
+  }
+
+  // --- intercept websocket ---
+  const OriginalWebSocket = window.WebSocket;
+  window.WebSocket = function(...args) {
+    const ws = new OriginalWebSocket(...args);
+
+    ws.addEventListener("message", async (event) => {
+      const data = event.data;
+
+      try {
+        if (typeof data === "string") {
+          const msg = JSON.parse(data);
+          if (msg.name === "player_name" && msg.data?.id) {
+            const existing = players.get(msg.data.id) || {};
+            players.set(msg.data.id, { ...existing, id: msg.data.id, name: msg.data.player_name });
+            console.log(`%c[Player Name] ID ${msg.data.id} is now ${msg.data.player_name}`, "color: #FF9800;");
+          }
+          return;
+        }
+
+        if (data instanceof Blob) {
+          const buffer = await blobToArrayBuffer(data);
+          decodeBinaryData(buffer);
+        } else if (data instanceof ArrayBuffer) {
+          decodeBinaryData(data);
+        }
+      } catch (err) {
+        // Silently ignore common JSON parse errors on binary data
+      }
+    });
+
+    return ws;
+  };
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
+
+  // --- write to the console on an interval (every 1s) ---
+  setInterval(() => {
+    const snapshot = Array.from(players.values()).filter(p => p.x !== undefined && p.y !== undefined);
+    if (snapshot.length) {
+      console.clear();
+      console.log(`%c[Live Tracker] ${snapshot.length} Active Players (v4.0 - FINAL PROTOCOL)`, "color:#03A9F4; font-weight:bold;");
+      console.table(snapshot, ['id', 'name', 'x', 'y', 'rot', 'vx', 'vy']);
+    }
+  }, 1000);
+})();

@@ -1,0 +1,76 @@
+// ==UserScript==
+// @name         starblast.io worker WS interceptor
+// @namespace    http://tampermonkey.net/
+// @version      0.3
+// @description  Injects WebSocket tracing and dumps full worker code for copy-paste injection
+// @author       plxyer-x
+// @match        *://starblast.io/*
+// @license      wat
+// @grant        none
+// @downloadURL https://update.greasyfork.org/scripts/551404/starblastio%20worker%20WS%20interceptor.user.js
+// @updateURL https://update.greasyfork.org/scripts/551404/starblastio%20worker%20WS%20interceptor.meta.js
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    console.log('[WS logger] Ready to log Websocket');
+
+    const originalWorker = window.Worker;
+
+    window.Worker = function (blobUrl) {
+        console.log('[WS Trace]Intercepted worker:', blobUrl);
+
+        fetch(blobUrl)
+            .then(res => res.text())
+            .then(code => {
+                console.log('[WS logger] Fetched blob code. Injecting trace hooks...');
+
+                const injected = `
+                    console.log('[Inject]Trace running in worker');
+
+                    const _WebSocket = self.WebSocket;
+                    self.WebSocket = function(...args) {
+                        console.log('[Inject] WS Created:', args);
+                        try {
+                            throw new Error('WS Trace');
+                        } catch (e) {
+                            console.log('[Inject] WS stack trace:', e.stack);
+                        }
+                        return new _WebSocket(...args);
+                    };
+                    self.WebSocket.prototype = _WebSocket.prototype;
+
+                    const suspiciousStrings = ['wss://', 'ws://'];
+                    const _Constructors = {};
+                    for (let key in self) {
+                        try {
+                            const prop = self[key];
+                            if (typeof prop === 'function') {
+                                _Constructors[key] = prop;
+                                self[key] = new Proxy(prop, {
+                                    construct(target, args, newTarget) {
+                                        const match = args && args.find(arg => typeof arg === 'string' && suspiciousStrings.some(s => arg.includes(s)));
+                                        if (match) {
+                                            console.warn('[ Inject] Suspicious constructor:', key, 'args:', args);
+                                            console.trace('[ Inject] Constructor stack trace');
+                                        }
+                                        return Reflect.construct(target, args, newTarget);
+                                    }
+                                });
+                            }
+                        } catch (e) {}
+                    }
+                `;
+
+                //Dump the raw code to the console so you can copy-paste it
+                console.log('[Dumping Worker Source]');
+                console.log(code);
+
+                const combined = injected + '\n\n' + code;
+                const blob = new Blob([combined], { type: 'application/javascript' });
+                const newUrl = URL.createObjectURL(blob);
+                return new originalWorker(newUrl);
+            });
+    };
+})();
