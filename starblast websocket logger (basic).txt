@@ -12,7 +12,7 @@
 (function() {
     'use strict';
 
-    console.log("%c[WS Logga] Any WS activity will be logged here.", "color: #9c27b0; font-weight: bold;");
+    console.log("%c[WS Logga] WS activity will be logged here.", "color: #9c27b0; font-weight: bold;");
 
     // Intercept the WebSocket constructor to log connections
     const originalWebSocket = window.WebSocket;
@@ -25,7 +25,7 @@
 
         // Add event listeners to log activity
         ws.addEventListener('open', (event) => {
-            console.log("%c[WS Logs] Connection Opened", "color: #4caf50;");
+            console.log("%c[WS Logs] Con opened", "color: #4caf50;");
         });
 
         ws.addEventListener('message', (event) => {
